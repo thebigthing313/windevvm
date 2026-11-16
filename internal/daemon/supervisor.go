@@ -220,6 +220,12 @@ func (s *Server) supervise(ctx context.Context) {
 // have been idle for their timeout: running, no SSH connection from the
 // host (shells, VS Code and port forwards all use one) and CPU under 5%.
 func (s *Server) tick(ctx context.Context) {
+	s.mu.Lock()
+	none := len(s.sup.targets) == 0
+	s.mu.Unlock()
+	if none {
+		return // no VMs: nothing to stop or forward, so don't query Hyper-V
+	}
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	states, err := s.Host.States(cctx)
 	cancel()

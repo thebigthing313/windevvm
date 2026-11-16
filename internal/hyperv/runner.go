@@ -53,6 +53,7 @@ func (r *Runner) Run(ctx context.Context, script string, args any, out any) erro
 	}
 	cmd := exec.CommandContext(ctx, exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encode(prelude+script+postlude))
 	cmd.Env = append(os.Environ(), "WDVM_ARGS="+string(argJSON))
+	hideConsole(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
