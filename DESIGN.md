@@ -20,7 +20,7 @@ windevvm            # creates the VM if needed, starts it and opens a shell; the
 |---|---|
 | `windevvm.exe` (Go, one binary) | The CLI. It also runs as a background **daemon** (`windevvm daemon`), which the CLI starts automatically. |
 | daemon: proxy | One listener per VM on `10.77.0.1:<18000+n>`. It enforces the network policy, intercepts TLS for hosts that have secrets bound, injects secrets and logs requests. |
-| daemon: supervisor | Stops idle VMs, forwards ports, and reports usage (`windevvm top`). |
+| daemon: supervisor | Stops idle VMs and forwards localhost ports into VMs (over SSH, so loopback-only servers work too). `windevvm top` reads Hyper-V and its performance counters directly. |
 | `internal/hyperv` | The only package that touches Hyper-V. It shells out to `powershell.exe` with the Hyper-V module, and every command it builds is in this one place. |
 | `internal/seed` | Builds the cloud-init NoCloud seed ISO (label `cidata`) in pure Go, so no ADK or oscdimg is needed. |
 
@@ -38,7 +38,7 @@ windevvm            # creates the VM if needed, starts it and opens a shell; the
 - **Windows Firewall:** the vNIC is set to the Public profile. Inbound traffic from `10.77.0.0/24` is allowed only to TCP `18000-18250` (the proxy ports). Everything else from that subnet is blocked, so host services such as SMB, RDP and local dev servers can't be reached.
 - **Anti-spoofing:** a Hyper-V port ACL on each VM's NIC (`Add-VMNetworkAdapterAcl`: outbound allow from its /32, deny `0.0.0.0/0` and `::/0`; the most specific rule wins) allows only its assigned IP, and DHCP guard, router guard and MAC spoofing protection are on. `windevvm doctor` checks this by adding a spare address inside the VM and confirming its packets never arrive. The proxy also checks that the source IP matches the VM that owns the port it was reached on. One VM can't pose as another to get its secrets or policy.
 - **No DNS in the VM.** Names are resolved by the proxy. `HTTP(S)_PROXY`, apt, git, npm and pip are configured to use it. A tool that ignores the proxy simply fails, which is the safe failure.
-- **Tiers:** `none` allows only bound secret hosts plus agent hosts, `allowlist` is the default, and `internet` allows any public host but never private or loopback ranges. There's no `open` tier in v1. Rules use devvm's format: `example.com`, `*.example.com`, `host:port`, and `!host` to deny (denies win). They live in a global policy, a per-project policy and named presets (`apt`, `npm`, `pypi`, `github`, `mise`, `go`, `crates`, written `@name`).
+- **Tiers:** `none` allows only bound secret hosts plus agent hosts, `allowlist` is the default, and `internet` allows any public host but never private or loopback ranges. There's no `open` tier in v1. Rules use devvm's format: `example.com`, `*.example.com`, `host:port`, and `!host` to deny (denies win). They live in a global policy, a per-project policy and named presets (`apt`, `npm`, `pypi`, `github`, `mise`, `go`, `crates`, `vscode`, written `@name`).
 - A blocked request gets a `403` naming the host and the rule that would allow it. `windevvm network log` and an in-VM `windevvm-why` show recent blocks.
 
 ## Secret injection
@@ -82,7 +82,7 @@ The global **host budget** is checked before every start and resize:
 - **Running VMs:** `max_running`, default 3.
 - **Disk:** total VM storage must stay ≤ `disk_budget`.
 - **Over budget:** `windevvm up` refuses and names the running VMs it could stop, or stops the least recently used idle VM if `--evict` is passed.
-- **Idle auto-stop:** the daemon stops a VM after `idle_timeout` (default 30 minutes) with no SSH session and low CPU.
+- **Idle auto-stop:** the daemon stops a VM after `idle_timeout` (default 30 minutes, overridable per project) with no TCP connection between it and the host, no proxy requests since the last check, and CPU under 5%. Connections are counted on the host (`Get-NetTCPConnection` on 10.77.0.1), which covers shells, VS Code, port forwards, browsing the VM's IP and long-lived requests through the proxy. Port forwards share one SSH connection per VM, closed 15 seconds after the last forwarded stream ends, so an unused forward doesn't keep a VM awake.
 - **`windevvm top`:** live CPU, memory, disk and network per VM compared with its caps and the budget.
 
 ```toml

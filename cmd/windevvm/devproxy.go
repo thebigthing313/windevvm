@@ -125,7 +125,10 @@ func cmdDevProxy(args []string) error {
 
 func printEvent(e proxy.Event) {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s %-6s %s %s:%d", e.Time.Format("15:04:05"), e.Kind, e.Method, e.Host, e.Port)
+	fmt.Fprintf(&b, "%s %-6s", e.Time.Format("15:04:05"), e.Kind)
+	if e.Host != "" {
+		fmt.Fprintf(&b, " %s %s:%d", e.Method, e.Host, e.Port)
+	}
 	if e.Path != "" {
 		b.WriteString(e.Path)
 	}

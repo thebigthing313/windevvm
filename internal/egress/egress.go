@@ -42,6 +42,12 @@ var Presets = map[string][]string{
 		"mise.run", "mise.jdx.dev", "mise-versions.jdx.dev", "nodejs.org",
 		"go.dev", "dl.google.com", "static.rust-lang.org", "sh.rustup.rs",
 	},
+	// VS Code Remote-SSH: its server download and the extension marketplace.
+	"vscode": {
+		"update.code.visualstudio.com", "vscode.download.prss.microsoft.com", "*.vo.msecnd.net",
+		"marketplace.visualstudio.com", "*.gallery.vsassets.io", "*.gallerycdn.vsassets.io",
+		"*.vscode-unpkg.net", "*.vscode-cdn.net", "open-vsx.org",
+	},
 	"go":     {"proxy.golang.org", "sum.golang.org", "storage.googleapis.com"},
 	"crates": {"crates.io", "index.crates.io", "static.crates.io"},
 }
@@ -60,7 +66,7 @@ const DefaultGlobalPolicy = `# windevvm global network policy: applies to every 
 # @preset, and !rule to deny (denies always win). Edit freely, or use
 # windevvm network allow|deny|rm --global.
 #
-# Presets: apt, npm, pypi, github, mise, go, crates.
+# Presets: apt, npm, pypi, github, mise, go, crates, vscode.
 @apt
 @npm
 @pypi
@@ -68,6 +74,7 @@ const DefaultGlobalPolicy = `# windevvm global network policy: applies to every 
 @mise
 @go
 @crates
+@vscode
 `
 
 // PresetNames lists the presets, sorted.

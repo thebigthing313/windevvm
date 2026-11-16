@@ -2,6 +2,7 @@ package hyperv
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -250,5 +251,70 @@ func (c *Client) IPGuard(ctx context.Context, name string) ([]string, error) {
 $r = @(Get-VMNetworkAdapterAcl -VMName $a.Name | Where-Object { $_.Direction -eq 'Outbound' } | ForEach-Object { "$($_.Action) $($_.LocalAddress)" })
 ConvertTo-Json -InputObject $r -Compress
 `, map[string]string{"Name": name}, &out)
+	return out, err
+}
+
+// Connections counts the established TCP connections on the host address
+// localIP (the windevvm switch), by remote address: SSH sessions, VS Code,
+// port forwards and browsing from the host, and the VMs' own connections to
+// their proxies. A VM with none is doing nothing over the network.
+func (c *Client) Connections(ctx context.Context, localIP string) (map[string]int, error) {
+	var addrs []string
+	err := c.R.Run(ctx, `
+$r = @(Get-NetTCPConnection -State Established -LocalAddress $a.IP -ErrorAction SilentlyContinue | ForEach-Object { $_.RemoteAddress })
+ConvertTo-Json -InputObject $r -Compress
+`, map[string]string{"IP": localIP}, &addrs)
+	out := map[string]int{}
+	for _, a := range addrs {
+		out[a]++
+	}
+	return out, err
+}
+
+// IO is a VM's current disk and network throughput in bytes per second.
+type IO struct {
+	NetRx, NetTx, DiskRead, DiskWrite float64
+}
+
+// IOUsage samples the Hyper-V performance counters (about one second) and
+// returns throughput per VM name, for the given VMs.
+func (c *Client) IOUsage(ctx context.Context, names []string) (map[string]IO, error) {
+	var samples []struct {
+		Path     string
+		Instance string
+		Value    float64
+	}
+	err := c.R.Run(ctx, `
+$paths = @(
+  '\Hyper-V Virtual Network Adapter(*)\Bytes Received/sec',
+  '\Hyper-V Virtual Network Adapter(*)\Bytes Sent/sec',
+  '\Hyper-V Virtual Storage Device(*)\Read Bytes/sec',
+  '\Hyper-V Virtual Storage Device(*)\Write Bytes/sec')
+$r = @((Get-Counter -Counter $paths -ErrorAction SilentlyContinue).CounterSamples | ForEach-Object {
+  [pscustomobject]@{ Path = $_.Path; Instance = $_.InstanceName; Value = [double]$_.CookedValue }
+})
+ConvertTo-Json -InputObject $r -Compress -Depth 3
+`, nil, &samples)
+	out := map[string]IO{}
+	for _, s := range samples {
+		inst, path := strings.ToLower(s.Instance), strings.ToLower(s.Path)
+		for _, n := range names {
+			if !strings.Contains(inst, strings.ToLower(n)) {
+				continue
+			}
+			io := out[n]
+			switch {
+			case strings.HasSuffix(path, `\bytes received/sec`):
+				io.NetRx += s.Value
+			case strings.HasSuffix(path, `\bytes sent/sec`):
+				io.NetTx += s.Value
+			case strings.HasSuffix(path, `\read bytes/sec`):
+				io.DiskRead += s.Value
+			case strings.HasSuffix(path, `\write bytes/sec`):
+				io.DiskWrite += s.Value
+			}
+			out[n] = io
+		}
+	}
 	return out, err
 }

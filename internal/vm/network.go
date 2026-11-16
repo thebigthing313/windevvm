@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"strconv"
+	"time"
 
 	"windevvm/internal/config"
 	"windevvm/internal/daemon"
@@ -25,6 +26,8 @@ type Net struct {
 	Store        *Store
 	Secrets      *secrets.Store
 	GlobalPolicy string // path of the global policy file
+	// IdleTimeout is the global idle_timeout.
+	IdleTimeout config.Duration
 }
 
 // ProxyAddr is where a VM's proxy listens on the host.
@@ -196,7 +199,18 @@ func (n *Net) Targets() ([]daemon.Target, map[string]error, error) {
 			errs[rec.Name] = err
 			continue
 		}
-		out = append(out, daemon.Target{Name: rec.Name, Addr: addr, VM: v})
+		idle := n.IdleTimeout
+		if p, err := config.LoadProject(rec.Project); err == nil && p.IdleTimeout != 0 {
+			idle = p.IdleTimeout
+		}
+		var timeout time.Duration
+		if idle.Enabled() {
+			timeout = time.Duration(idle)
+		}
+		out = append(out, daemon.Target{
+			Name: rec.Name, Addr: addr, VM: v,
+			IP: rec.IP, HostKey: rec.HostKey, Forwards: rec.Ports, IdleTimeout: timeout,
+		})
 	}
 	return out, errs, nil
 }

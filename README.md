@@ -9,7 +9,7 @@ windevvm gives each dev project its own isolated Hyper-V Linux VM on Windows 11 
 | 1. Egress proxy: policy, local CA, secret injection | done |
 | 2. Hyper-V lifecycle: base image, per-project VMs, resource caps, host budget | done |
 | 3. Lockdown: proxy wired to VMs, port ACLs, `doctor` | done |
-| 4. Workflow: clone mode, toolchain detection, ports, VS Code, idle stop | planned |
+| 4. Workflow: clone mode, toolchain detection, ports, VS Code, idle stop | done |
 
 VMs have no route to the internet and no DNS. Their only way out is the proxy the windevvm daemon runs for each VM on the host, which enforces the network policy and injects secrets.
 
@@ -35,6 +35,26 @@ windevvm ls             # VMs, their caps, and the host budget
 windevvm stop           # shut down this project's VM
 windevvm rm             # delete it
 ```
+
+## Project files and toolchains
+
+The first `windevvm up` copies the project into the VM at `/home/dev/<folder>`, and `windevvm shell` starts there:
+
+- **Git repos (clone mode):** every local branch and tag is pushed into a clone of its own inside the VM, with the host's current branch checked out. Uncommitted changes stay on the host. `origin` is set to the https form of the host's origin, so `git push` from the VM goes through the proxy with your placeholder credentials.
+- **Other folders:** a one-time copy, skipping `node_modules`, `.venv`, `target` and similar.
+- **Toolchains:** a `mise.toml` or `.tool-versions` is installed exactly as written. Otherwise windevvm detects node (`package.json`, `.nvmrc`), python (`pyproject.toml`, `requirements.txt`, `.python-version`), go (`go.mod`) and rust (`Cargo.toml`, `rust-toolchain`), then runs `mise install`.
+
+```powershell
+windevvm pull           # VM branches -> windevvm/<branch> on the host; nothing is checked out or merged
+windevvm ports add 3000 # http://localhost:3000 reaches port 3000 in the VM (also VM-loopback-only servers)
+windevvm ports          # forwards, and what is listening in the VM
+windevvm code           # VS Code Remote-SSH into the project folder (asks to add an Include to ~/.ssh/config)
+windevvm top            # live CPU, memory, disk and network per VM against caps and budget
+```
+
+Servers listening on all interfaces in the VM are also reachable from the host at `http://<VM IP>:<port>`. For VS Code's server and extensions, the `@vscode` preset must be allowed (it is in new global policies; otherwise `windevvm network allow @vscode --global`).
+
+**Idle stop:** the daemon stops a VM after `idle_timeout` (default `30m`, `"off"` to disable) with no TCP connection between it and the host (shells, VS Code, active port forwards, browsing its IP, and its own requests through the proxy all count), no proxy requests since the last check, and CPU under 5%. Set it in `config.toml`, or per project at the top of `.windevvm.toml`: `idle_timeout = "2h"`.
 
 ## Resource caps
 
@@ -79,7 +99,7 @@ windevvm doctor                      # checks the lockdown from inside the VM
 
 Rules come from three places, and denies always win:
 
-- the global policy `%LOCALAPPDATA%\windevvm\policy`, created with the presets `@apt @npm @pypi @github @mise @go @crates`
+- the global policy `%LOCALAPPDATA%\windevvm\policy`, created with the presets `@apt @npm @pypi @github @mise @go @crates @vscode`
 - `[network] allow` in `.windevvm.toml`
 - the VM's own policy file, edited by `windevvm network allow|deny|rm`
 

@@ -15,6 +15,10 @@ Usage:
   windevvm stop [NAME]     shut a VM down
   windevvm rm [NAME] [-y]  delete a VM and its disk
   windevvm ls              list VMs, their caps and the host budget
+  windevvm top [--once]    live CPU, memory, disk and network per VM, against caps and budget
+  windevvm pull            fetch the VM clone's branches into windevvm/<branch> (nothing is checked out)
+  windevvm ports [add [HOST:]GUEST | rm HOST]   forward localhost ports into the VM
+  windevvm code [-y]       open the project in VS Code (Remote-SSH)
 
   windevvm setup           one-time host setup (asks for administrator rights)
   windevvm image build     build the base image (Ubuntu + toolchains + coding agents)
@@ -63,6 +67,14 @@ func main() {
 		err = cmdSecret(args[1:])
 	case "network", "net":
 		err = cmdNetwork(args[1:])
+	case "pull":
+		err = cmdPull(args[1:])
+	case "ports":
+		err = cmdPorts(args[1:])
+	case "code":
+		err = cmdCode(args[1:])
+	case "top":
+		err = cmdTop(args[1:])
 	case "doctor":
 		err = cmdDoctor(args[1:])
 	case "daemon":

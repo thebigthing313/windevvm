@@ -15,6 +15,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"windevvm/internal/daemon"
+	"windevvm/internal/sshkeys"
 )
 
 // Network layout of the windevvm switch. VMs get static addresses and no
@@ -45,6 +48,17 @@ type Record struct {
 	// Placeholders maps each secret in use to this VM's placeholder for it.
 	// They aren't secret; the real values stay in the secret store.
 	Placeholders map[string]string `json:"placeholders,omitempty"`
+	// NeedsCopy is set on new VMs until the project has been copied in.
+	NeedsCopy bool `json:"needs_copy,omitempty"`
+	// Cloned is set once the project has been copied into the VM.
+	Cloned bool `json:"cloned,omitempty"`
+	// Ports are localhost ports the daemon forwards into the VM while it runs.
+	Ports []daemon.Forward `json:"ports,omitempty"`
+}
+
+// WorkDir is where the project lives inside the VM.
+func (r *Record) WorkDir() string {
+	return "/home/" + sshkeys.User + "/" + slug(filepath.Base(r.Project))
 }
 
 // NameFor derives a stable VM name from a project path: wdvm-<folder>-<hash>.

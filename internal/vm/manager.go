@@ -35,6 +35,8 @@ type Manager struct {
 	Net *Net
 	// CACert returns the local CA certificate (PEM) VMs are told to trust.
 	CACert func() ([]byte, error)
+	// SSHExe is the OpenSSH client, which git uses to reach VMs.
+	SSHExe string
 	// Daemon, if set, is told whenever a VM's network configuration changes.
 	Daemon Notifier
 }
@@ -163,7 +165,26 @@ func (m *Manager) Up(ctx context.Context, project string) (*Record, error) {
 	if err := m.SyncSSH(); err != nil {
 		return nil, err
 	}
-	return rec, m.Configure(ctx, rec, netSetup)
+	if err := m.Configure(ctx, rec, netSetup); err != nil {
+		return nil, err
+	}
+	// Tell the daemon again now that the VM runs, so its port forwards open.
+	if err := m.notify(ctx, rec.Name); err != nil {
+		return nil, err
+	}
+	// Only VMs created by this version copy the project in; older VMs may
+	// already hold the user's work in that folder.
+	if rec.NeedsCopy {
+		if err := m.populate(ctx, rec); err != nil {
+			m.say("Warning: copying the project into the VM failed: %v\nThe VM is running; windevvm up tries again.", err)
+			return rec, nil
+		}
+		rec.NeedsCopy, rec.Cloned = false, true
+		if err := m.Store.Save(rec); err != nil {
+			return nil, err
+		}
+	}
+	return rec, nil
 }
 
 func (m *Manager) seedPath(name string) string { return filepath.Join(m.Store.Dir(name), "seed.iso") }
@@ -208,6 +229,7 @@ func (m *Manager) create(ctx context.Context, project string, res config.Resourc
 		InstanceID: name + "-" + strconv.FormatInt(time.Now().Unix(), 36),
 		HostKey:    hostPub,
 		Base:       base.Path,
+		NeedsCopy:  true,
 		Created:    time.Now(),
 	}
 	if err := m.Store.Save(rec); err != nil {

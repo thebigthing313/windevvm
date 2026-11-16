@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
@@ -166,11 +167,15 @@ type Global struct {
 	Resources  Resources `toml:"resources"`
 	Budget     Budget    `toml:"budget"`
 	Image      Image     `toml:"image"`
+	// IdleTimeout stops a running VM after this long with no SSH connection
+	// and little CPU use. Default 30m; "off" disables it.
+	IdleTimeout Duration `toml:"idle_timeout"`
 }
 
 // Defaults are used for anything config.toml doesn't set.
 func Defaults() Global {
 	return Global{
+		IdleTimeout: Duration(30 * time.Minute),
 		Resources: Resources{
 			CPUs:          4,
 			CPUMaxPercent: 50,
@@ -233,6 +238,8 @@ type Project struct {
 	Secrets struct {
 		Use []string `toml:"use"`
 	} `toml:"secrets"`
+	// IdleTimeout overrides the global idle_timeout for this project.
+	IdleTimeout Duration `toml:"idle_timeout"`
 }
 
 // LoadProject reads dir/.windevvm.toml if it exists.

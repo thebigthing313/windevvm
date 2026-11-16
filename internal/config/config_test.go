@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -97,5 +98,26 @@ func TestFindProjectRoot(t *testing.T) {
 	got, err := FindProjectRoot(sub)
 	if err != nil || got != root {
 		t.Fatalf("FindProjectRoot = %q, %v; want %q", got, err, root)
+	}
+}
+
+func TestIdleTimeout(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, ProjectFile), []byte("idle_timeout = \"2h\"\n"), 0o644)
+	p, err := LoadProject(dir)
+	if err != nil || time.Duration(p.IdleTimeout) != 2*time.Hour {
+		t.Fatal(p.IdleTimeout, err)
+	}
+	os.WriteFile(filepath.Join(dir, ProjectFile), []byte("idle_timeout = \"off\"\n"), 0o644)
+	p, _ = LoadProject(dir)
+	if p.IdleTimeout != Off || p.IdleTimeout.Enabled() {
+		t.Fatal(p.IdleTimeout)
+	}
+	os.WriteFile(filepath.Join(dir, ProjectFile), []byte("idle_timeout = \"-5m\"\n"), 0o644)
+	if _, err := LoadProject(dir); err == nil {
+		t.Fatal("negative duration accepted")
+	}
+	if !Defaults().IdleTimeout.Enabled() {
+		t.Fatal("idle stop should default on")
 	}
 }

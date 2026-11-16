@@ -37,6 +37,7 @@ func newManager() (*vm.Manager, error) {
 		Net:         n,
 		CACert:      caCert,
 		Daemon:      daemonNotifier{daemonClient()},
+		SSHExe:      sshPath(),
 		SSH:         &sshkeys.Dir{Path: filepath.Join(paths.DataDir(), "ssh")},
 		Out:         os.Stdout,
 		TotalMemory: hostinfo.TotalMemory(),
@@ -79,7 +80,7 @@ func cmdUp(args []string, shell bool) error {
 		fmt.Printf("%s is running at %s. Connect with: windevvm shell (or ssh -F \"%s\" %s)\n", rec.Name, rec.IP, m.SSH.ConfigPath(), rec.Name)
 		return nil
 	}
-	return sshInto(m, rec.Name, fs.Args())
+	return sshInto(m, rec, fs.Args())
 }
 
 func sshExe() (string, error) {
@@ -93,17 +94,23 @@ func sshExe() (string, error) {
 	return "", errors.New("ssh.exe not found; install the Windows OpenSSH client (Settings > System > Optional features)")
 }
 
-func sshInto(m *vm.Manager, name string, command []string) error {
+func sshInto(m *vm.Manager, rec *vm.Record, command []string) error {
 	exe, err := sshExe()
 	if err != nil {
 		return err
 	}
+	if len(command) > 0 && command[0] == "--" {
+		command = command[1:]
+	}
+	// Start in the project folder (WorkDir is [a-z0-9/-], safe unquoted).
+	remote := "cd " + rec.WorkDir() + " 2>/dev/null; exec bash -l"
 	args := []string{"-F", m.SSH.ConfigPath()}
 	if len(command) == 0 {
 		args = append(args, "-t")
+	} else {
+		remote = "cd " + rec.WorkDir() + " 2>/dev/null; " + strings.Join(command, " ")
 	}
-	args = append(args, name)
-	args = append(args, command...)
+	args = append(args, rec.Name, remote)
 	cmd := exec.Command(exe, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	// Ctrl-C belongs to the remote shell, not to us.
@@ -220,7 +227,11 @@ func cmdShell(args []string) error {
 	if name == "" {
 		return cmdUp(rest, true)
 	}
-	return sshInto(m, name, rest)
+	rec, err := m.Store.Load(name)
+	if err != nil {
+		return fmt.Errorf("no VM named %s", name)
+	}
+	return sshInto(m, rec, rest)
 }
 
 func cmdImage(args []string) error {
@@ -282,4 +293,10 @@ func caCert() ([]byte, error) {
 		return nil, err
 	}
 	return authority.CertPEM, nil
+}
+
+// sshPath is the OpenSSH client, or "" if it isn't installed.
+func sshPath() string {
+	p, _ := sshExe()
+	return p
 }

@@ -28,13 +28,24 @@ type Target struct {
 	Name string
 	Addr string // listen address, e.g. 10.77.0.1:18010
 	VM   *proxy.VM
+	// IP and HostKey reach the VM over SSH, for port forwards.
+	IP      string
+	HostKey string
+	// Forwards are localhost ports forwarded into the VM while it runs.
+	Forwards []Forward
+	// IdleTimeout stops the VM after this long idle; 0 disables it.
+	IdleTimeout time.Duration
 }
 
 // VMStatus reports one VM's listener.
 type VMStatus struct {
-	Name  string `json:"name"`
-	Addr  string `json:"addr,omitempty"`
-	Error string `json:"error,omitempty"`
+	Name     string   `json:"name"`
+	Addr     string   `json:"addr,omitempty"`
+	Error    string   `json:"error,omitempty"`
+	Forwards []string `json:"forwards,omitempty"`
+	// IdleSince is when the VM was last seen busy, if it is idle now.
+	IdleSince   time.Time     `json:"idle_since,omitempty"`
+	IdleTimeout time.Duration `json:"idle_timeout,omitempty"`
 }
 
 // Status is what the control endpoint reports.
@@ -58,13 +69,26 @@ type Server struct {
 	Listen func(addr string) (net.Listener, error)
 	// Log receives proxy events. Optional.
 	Log *EventLog
+	// Host, if set, reports and stops VMs, for idle stop and for opening
+	// port forwards only while a VM runs.
+	Host Host
+	// DialVM connects to a port inside a VM (over SSH), for port forwards.
+	DialVM func(t Target, port int) (net.Conn, error)
+	// Interval is how often the supervisor checks VMs. Default 1 minute.
+	Interval time.Duration
+	// Now is the clock, for tests. Defaults to time.Now.
+	Now func() time.Time
+
+	sup supervisor
+	// activity is the time of each VM's latest proxy request.
+	activity sync.Map
 
 	reloadMu sync.Mutex // serializes whole reloads, so an older load never wins
 	mu       sync.Mutex
-	running map[string]*listener
-	errs    map[string]string
-	started time.Time
-	stop    context.CancelFunc
+	running  map[string]*listener
+	errs     map[string]string
+	started  time.Time
+	stop     context.CancelFunc
 }
 
 type listener struct {
@@ -118,6 +142,7 @@ func (s *Server) Reload() error {
 			want[t.Name] = t
 		}
 	}
+	s.sup.targets = want
 	for name, l := range s.running {
 		if t, ok := want[name]; !ok || t.Addr != l.addr {
 			l.hs.Close()
@@ -135,12 +160,26 @@ func (s *Server) Reload() error {
 			continue
 		}
 		ps := proxy.New(s.CA, t.VM)
-		if s.Log != nil {
-			ps.OnEvent = s.Log.Write
+		ps.OnEvent = func(e proxy.Event) {
+			s.markActive(e.VM, e.Time)
+			if s.Log != nil {
+				s.Log.Write(e)
+			}
 		}
 		hs := &http.Server{Handler: ps, ReadHeaderTimeout: 30 * time.Second}
 		go hs.Serve(ln)
 		s.running[name] = &listener{addr: t.Addr, actual: ln.Addr().String(), ps: ps, hs: hs}
+	}
+	s.syncForwardsLocked()
+	// Fresh VM states (a slow PowerShell call) are fetched in the background;
+	// forwards of VMs that just started open as soon as they arrive.
+	if s.Host != nil {
+		go func() {
+			s.refreshStates()
+			s.mu.Lock()
+			s.syncForwardsLocked()
+			s.mu.Unlock()
+		}()
 	}
 	return nil
 }
@@ -155,7 +194,7 @@ func (s *Server) Status() Status {
 		st.Dropped = s.Log.Dropped()
 	}
 	for name, l := range s.running {
-		st.VMs = append(st.VMs, VMStatus{Name: name, Addr: l.actual})
+		st.VMs = append(st.VMs, s.vmStatusLocked(name, l.actual))
 	}
 	for name, e := range s.errs {
 		st.VMs = append(st.VMs, VMStatus{Name: name, Error: e})
@@ -204,6 +243,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 	defer s.closeAll()
+	go s.supervise(ctx)
 
 	tok := make([]byte, 32)
 	if _, err := rand.Read(tok); err != nil {
@@ -231,9 +271,14 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) closeAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.sup.closed = true
 	for name, l := range s.running {
 		l.hs.Close()
 		delete(s.running, name)
+	}
+	for k, f := range s.sup.fwds {
+		f.close()
+		delete(s.sup.fwds, k)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"os"
@@ -177,4 +178,16 @@ func RunInput(c *ssh.Client, cmd, stdin string) (string, error) {
 	s.Stdin = strings.NewReader(stdin)
 	out, err := s.CombinedOutput(cmd)
 	return string(out), err
+}
+
+// Stream executes a command with stdin as input (nil for none), copying its
+// output to out as it arrives.
+func Stream(c *ssh.Client, cmd string, stdin io.Reader, out io.Writer) error {
+	s, err := c.NewSession()
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	s.Stdin, s.Stdout, s.Stderr = stdin, out, out
+	return s.Run(cmd)
 }
