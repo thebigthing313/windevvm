@@ -15,6 +15,7 @@ import (
 
 	"windevvm/internal/cloudinit"
 	"windevvm/internal/config"
+	"windevvm/internal/egress"
 	"windevvm/internal/hyperv"
 	"windevvm/internal/image"
 	"windevvm/internal/seed"
@@ -30,6 +31,18 @@ type Manager struct {
 	Out         io.Writer
 	TotalMemory int64
 	LogicalCPUs int
+	// Net computes network policy and secrets for VMs.
+	Net *Net
+	// CACert returns the local CA certificate (PEM) VMs are told to trust.
+	CACert func() ([]byte, error)
+	// Daemon, if set, is told whenever a VM's network configuration changes.
+	Daemon Notifier
+}
+
+// Notifier tells the daemon to reload, reporting an error if it can't serve
+// the named VM's proxy.
+type Notifier interface {
+	Notify(ctx context.Context, vm string) error
 }
 
 func (m *Manager) say(format string, a ...any) { fmt.Fprintf(m.Out, format+"\n", a...) }
@@ -89,6 +102,10 @@ func (m *Manager) Up(ctx context.Context, project string) (*Record, error) {
 			return nil, err
 		}
 	}
+	netSetup, err := m.prepareNet(rec)
+	if err != nil {
+		return nil, err
+	}
 	info, ok, err := m.HV.GetVM(ctx, rec.Name)
 	if err != nil {
 		return nil, err
@@ -97,6 +114,12 @@ func (m *Manager) Up(ctx context.Context, project string) (*Record, error) {
 		return nil, fmt.Errorf("VM %s is recorded but missing from Hyper-V; remove it with: windevvm rm %s", rec.Name, rec.Name)
 	}
 
+	if err := m.HV.SetIPGuard(ctx, rec.Name, rec.IP); err != nil {
+		return nil, fmt.Errorf("lock %s to its address: %w", rec.Name, err)
+	}
+	if err := m.notify(ctx, rec.Name); err != nil {
+		return nil, err
+	}
 	if info.Running() {
 		deferred, err := m.HV.ApplyCaps(ctx, rec.Name, capsFor(res))
 		if err != nil {
@@ -137,7 +160,10 @@ func (m *Manager) Up(ctx context.Context, project string) (*Record, error) {
 			return nil, err
 		}
 	}
-	return rec, m.SyncSSH()
+	if err := m.SyncSSH(); err != nil {
+		return nil, err
+	}
+	return rec, m.Configure(ctx, rec, netSetup)
 }
 
 func (m *Manager) seedPath(name string) string { return filepath.Join(m.Store.Dir(name), "seed.iso") }
@@ -272,7 +298,10 @@ func (m *Manager) Remove(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	return m.SyncSSH()
+	if err := m.SyncSSH(); err != nil {
+		return err
+	}
+	return m.notify(ctx, "")
 }
 
 // SyncSSH rewrites known_hosts and the ssh config from the VM records.
@@ -338,4 +367,88 @@ func (m *Manager) Resolve(nameOrEmpty, dir string) (*Record, error) {
 		return nil, fmt.Errorf("no VM for %s yet; create one with: windevvm", project)
 	}
 	return r, nil
+}
+
+func (m *Manager) notify(ctx context.Context, name string) error {
+	if m.Daemon == nil {
+		return nil
+	}
+	return m.Daemon.Notify(ctx, name)
+}
+
+// prepareNet checks that every secret the VM uses exists and gives each a
+// placeholder, saving the record if that changed it.
+func (m *Manager) prepareNet(rec *Record) (*Setup, error) {
+	if m.Net == nil {
+		return nil, nil
+	}
+	s, err := m.Net.Setup(rec)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := egress.Assemble(s.Inputs); err != nil {
+		return nil, err
+	}
+	changed, err := SyncPlaceholders(rec, s.InUse)
+	if err != nil {
+		return nil, err
+	}
+	if changed {
+		return s, m.Store.Save(rec)
+	}
+	return s, nil
+}
+
+// Configure pushes the proxy settings, CA certificate and secret placeholders
+// into a running VM over SSH. Shells opened before it ran keep their old
+// environment. s is the VM's network setup from prepareNet.
+func (m *Manager) Configure(ctx context.Context, rec *Record, s *Setup) error {
+	if m.Net == nil || s == nil {
+		return nil
+	}
+	cert, err := m.CACert()
+	if err != nil {
+		return err
+	}
+	addr, err := ProxyAddr(rec)
+	if err != nil {
+		return err
+	}
+	script, err := egress.Guest{
+		ProxyURL:     "http://" + addr,
+		CACert:       cert,
+		Placeholders: rec.Placeholders,
+		Secrets:      s.Inputs.Secrets,
+	}.Script()
+	if err != nil {
+		return err
+	}
+	c, err := m.SSH.Dial(rec.IP, rec.HostKey, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("connect to %s: %w", rec.Name, err)
+	}
+	defer c.Close()
+	out, err := sshkeys.RunInput(c, "sudo bash -s", script)
+	if err != nil || !strings.Contains(out, egress.GuestDone) {
+		return fmt.Errorf("configure the network inside %s: %v\n%s", rec.Name, err, strings.TrimSpace(out))
+	}
+	return nil
+}
+
+// ApplyNetwork brings a VM in line with its current network sources: it
+// refreshes placeholders, has the daemon reload and, if the VM is running,
+// pushes the new configuration into it.
+func (m *Manager) ApplyNetwork(ctx context.Context, rec *Record) (running bool, err error) {
+	s, err := m.prepareNet(rec)
+	if err != nil {
+		return false, err
+	}
+	if err := m.notify(ctx, rec.Name); err != nil {
+		return false, err
+	}
+	info, ok, err := m.HV.GetVM(ctx, rec.Name)
+	if err != nil || !ok || !info.Running() {
+		return false, err
+	}
+	return true, m.Configure(ctx, rec, s)
 }

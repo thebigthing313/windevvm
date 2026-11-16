@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
 	"golang.org/x/term"
 
+	"windevvm/internal/config"
+	"windevvm/internal/egress"
 	"windevvm/internal/paths"
 	"windevvm/internal/protect"
 	"windevvm/internal/secrets"
@@ -41,20 +44,33 @@ func splitList(s string) []string {
 
 func cmdSecret(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: windevvm secret set|ls|rm")
+		return errors.New("usage: windevvm secret set|ls|rm|use|unuse")
 	}
 	switch args[0] {
 	case "set":
 		return secretSet(args[1:])
 	case "ls", "list":
 		return secretList()
+	case "use":
+		return secretUse(args[1:], true)
+	case "unuse":
+		return secretUse(args[1:], false)
 	case "rm", "remove":
-		if len(args) != 2 {
-			return errors.New("usage: windevvm secret rm NAME")
+		name, rest := splitName(args[1:])
+		force := len(rest) == 1 && (rest[0] == "-f" || rest[0] == "--force")
+		if name == "" || len(rest) > 0 && !force {
+			return errors.New("usage: windevvm secret rm NAME [-f]")
 		}
+		if users, err := secretUsers(name); err != nil {
+			return err
+		} else if len(users) > 0 && !force {
+			return fmt.Errorf("%s is in use by %s; those VMs would lose all network access until it is set again or no longer used (windevvm secret unuse, or [secrets] use in .windevvm.toml). Use -f to remove it anyway", name, strings.Join(users, ", "))
+		}
+		args = []string{"rm", name}
 		if err := store().Remove(args[1]); err != nil {
 			return err
 		}
+		reloadDaemonIfRunning()
 		fmt.Printf("Removed secret %s.\n", args[1])
 		return nil
 	}
@@ -125,6 +141,7 @@ func secretSet(args []string) error {
 	if err := store().Set(sec); err != nil {
 		return err
 	}
+	reloadDaemonIfRunning()
 	fmt.Printf("Saved secret %s (encrypted for your Windows user). Injected only into HTTPS requests to: %s\n", name, strings.Join(sec.Hosts, ", "))
 	if note != "" {
 		fmt.Println(note)
@@ -185,4 +202,101 @@ func secretList() error {
 		fmt.Printf("%-24s hosts: %s   in: %s\n", s.Name, strings.Join(s.Hosts, ", "), in)
 	}
 	return nil
+}
+
+// secretUse exposes secrets to (or hides them from) this project's VM.
+func secretUse(args []string, use bool) error {
+	args, vmName, _, err := networkFlags(args)
+	if err != nil {
+		return err
+	}
+	verb := "use"
+	if !use {
+		verb = "unuse"
+	}
+	if len(args) == 0 {
+		return fmt.Errorf("usage: windevvm secret %s NAME... [--vm NAME]", verb)
+	}
+	m, err := newManager()
+	if err != nil {
+		return err
+	}
+	rec, err := resolveVM(m, vmName)
+	if err != nil {
+		return err
+	}
+	proj, err := config.LoadProject(rec.Project)
+	if err != nil {
+		return err
+	}
+	inProject := map[string]bool{}
+	for _, n := range proj.Secrets.Use {
+		inProject[n] = true
+	}
+	current := map[string]bool{}
+	for _, n := range rec.Secrets {
+		current[n] = true
+	}
+	for _, name := range args {
+		if use {
+			if _, err := store().Meta(name); err != nil {
+				return err
+			}
+			current[name] = true
+		} else {
+			if inProject[name] {
+				return fmt.Errorf("%s is listed under [secrets] use in %s; remove it there", name, rec.Project+`\.windevvm.toml`)
+			}
+			delete(current, name)
+		}
+	}
+	rec.Secrets = rec.Secrets[:0]
+	for n := range current {
+		rec.Secrets = append(rec.Secrets, n)
+	}
+	sort.Strings(rec.Secrets)
+	if err := m.Store.Save(rec); err != nil {
+		return err
+	}
+	ctx, cancel := signalContext()
+	defer cancel()
+	running, err := m.ApplyNetwork(ctx, rec)
+	if err != nil {
+		return err
+	}
+	if use {
+		for _, name := range args {
+			fmt.Printf("%s: $%s=%s inside the VM; the proxy swaps in the real value for its hosts.\n", rec.Name, name, rec.Placeholders[name])
+		}
+	} else {
+		fmt.Printf("%s no longer has %s.\n", rec.Name, strings.Join(args, ", "))
+	}
+	if running {
+		fmt.Println("Open a new shell in the VM to pick up the change.")
+	}
+	return nil
+}
+
+// secretUsers lists the VMs that use a secret, through .windevvm.toml or
+// windevvm secret use.
+func secretUsers(name string) ([]string, error) {
+	cfg, err := config.LoadGlobal()
+	if err != nil {
+		return nil, err
+	}
+	recs, err := newNet(cfg).Store.All()
+	if err != nil {
+		return nil, err
+	}
+	var users []string
+	for _, rec := range recs {
+		proj, err := config.LoadProject(rec.Project)
+		if err != nil {
+			proj = config.Project{}
+		}
+		if slices.Contains(egress.SecretsInUse(proj.Secrets.Use, rec.Secrets), name) {
+			users = append(users, rec.Name)
+		}
+	}
+	return users, nil
 }

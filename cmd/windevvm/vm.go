@@ -13,11 +13,13 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"windevvm/internal/ca"
 	"windevvm/internal/config"
 	"windevvm/internal/hostinfo"
 	"windevvm/internal/hyperv"
 	"windevvm/internal/image"
 	"windevvm/internal/paths"
+	"windevvm/internal/protect"
 	"windevvm/internal/sshkeys"
 	"windevvm/internal/vm"
 )
@@ -27,10 +29,14 @@ func newManager() (*vm.Manager, error) {
 	if err != nil {
 		return nil, err
 	}
+	n := newNet(cfg)
 	return &vm.Manager{
 		Cfg:         cfg,
 		HV:          &hyperv.Client{},
-		Store:       &vm.Store{Root: filepath.Join(cfg.Storage(), "vms")},
+		Store:       n.Store,
+		Net:         n,
+		CACert:      caCert,
+		Daemon:      daemonNotifier{daemonClient()},
 		SSH:         &sshkeys.Dir{Path: filepath.Join(paths.DataDir(), "ssh")},
 		Out:         os.Stdout,
 		TotalMemory: hostinfo.TotalMemory(),
@@ -267,4 +273,13 @@ func firstArg(args []string) string {
 		return args[0]
 	}
 	return ""
+}
+
+// caCert returns the local CA certificate, creating the CA on first use.
+func caCert() ([]byte, error) {
+	authority, _, err := ca.LoadOrCreate(paths.CADir(), protect.Default())
+	if err != nil {
+		return nil, err
+	}
+	return authority.CertPEM, nil
 }

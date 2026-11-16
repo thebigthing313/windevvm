@@ -22,7 +22,16 @@ Usage:
 
   windevvm secret set NAME [--preset P | --hosts h1,h2] [--in header,url,body] [--from-env VAR]
   windevvm secret ls
-  windevvm secret rm NAME
+  windevvm secret rm NAME [-f]
+  windevvm secret use NAME... / unuse NAME...   expose a secret to this project's VM (as a placeholder)
+
+  windevvm network         show this VM's network policy
+  windevvm network none|allowlist|internet|reset
+  windevvm network allow|deny|rm RULE... [--global]
+  windevvm network log [-n N] [-f] [--all] [--blocked]
+  windevvm doctor          check this VM's network lockdown from the inside
+  windevvm daemon [status|stop|restart]   the background proxy (starts automatically)
+
   windevvm ca init         create the local CA (if missing) and print its path
   windevvm dev-proxy       run the injecting proxy on this machine, for trying it out
 
@@ -52,6 +61,12 @@ func main() {
 		err = cmdImage(args[1:])
 	case "secret":
 		err = cmdSecret(args[1:])
+	case "network", "net":
+		err = cmdNetwork(args[1:])
+	case "doctor":
+		err = cmdDoctor(args[1:])
+	case "daemon":
+		err = cmdDaemon(args[1:])
 	case "ca":
 		err = cmdCA(args[1:])
 	case "dev-proxy":

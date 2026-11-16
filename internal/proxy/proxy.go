@@ -167,15 +167,14 @@ func (s *Server) block(w http.ResponseWriter, vm *VM, method, host string, port 
 	writeBlock(w, fmt.Sprintf("%s: %s", hostPort(host, port), d.Reason), d.Suggest)
 }
 
-// rejectRequest answers a request that failed placeholder rewriting.
-func (s *Server) rejectRequest(w http.ResponseWriter, vm *VM, r *http.Request, host string, port int, err error) {
+// rejectEvent describes a request that failed placeholder rewriting.
+func rejectEvent(method, host string, port int, path string, err error) Event {
 	kind := KindError
 	var v *inject.Violation
 	if errors.As(err, &v) {
 		kind = KindExfil
 	}
-	s.emit(vm, Event{Kind: kind, Method: r.Method, Host: host, Port: port, Path: r.URL.Path, Reason: err.Error()})
-	writeBlock(w, err.Error(), "")
+	return Event{Kind: kind, Method: method, Host: host, Port: port, Path: path, Reason: err.Error()}
 }
 
 // upstreamError answers a request whose upstream connection failed.
@@ -255,11 +254,13 @@ func (s *Server) handlePlain(w http.ResponseWriter, r *http.Request, vm *VM) {
 		s.block(w, vm, r.Method, host, port, d)
 		return
 	}
+	path := r.URL.Path
 	if _, err := vm.Injector.RewriteRequest(r, host, false); err != nil {
-		s.rejectRequest(w, vm, r, host, port, err)
+		s.emit(vm, rejectEvent(r.Method, host, port, path, err))
+		writeBlock(w, err.Error(), "")
 		return
 	}
-	s.emit(vm, Event{Kind: KindAllow, Method: r.Method, Host: host, Port: port, Path: r.URL.Path, Reason: d.Reason, Rule: d.Rule})
+	s.emit(vm, Event{Kind: KindAllow, Method: r.Method, Host: host, Port: port, Path: path, Reason: d.Reason, Rule: d.Rule})
 	rp := &httputil.ReverseProxy{
 		Rewrite:   func(pr *httputil.ProxyRequest) { pr.Out.Host = pr.In.Host },
 		Transport: s.getTransport(),
@@ -330,13 +331,16 @@ func (s *Server) interceptHandler(vm *VM, host string, port int) http.Handler {
 		ErrorLog: discardLog,
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Log the path as the VM sent it: after rewriting it may hold a secret.
+		path := r.URL.Path
 		used, err := inj.RewriteRequest(r, host, true)
 		if err != nil {
-			s.rejectRequest(w, vm, r, host, port, err)
+			s.emit(vm, rejectEvent(r.Method, host, port, path, err))
+			writeBlock(w, err.Error(), "")
 			return
 		}
 		if len(used) > 0 {
-			s.emit(vm, Event{Kind: KindInject, Method: r.Method, Host: host, Port: port, Path: r.URL.Path, Secrets: used, Intercepted: true})
+			s.emit(vm, Event{Kind: KindInject, Method: r.Method, Host: host, Port: port, Path: path, Secrets: used, Intercepted: true})
 		}
 		rp.ServeHTTP(w, r)
 	})

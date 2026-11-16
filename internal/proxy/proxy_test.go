@@ -315,3 +315,31 @@ func TestSourceIPCheck(t *testing.T) {
 		t.Fatal("expected the proxy to refuse a request from the wrong address")
 	}
 }
+
+func TestEventsNeverHoldInjectedSecrets(t *testing.T) {
+	b := otherBinding()
+	b.Secret.Hosts = []string{"example.com"}
+	b.Secret.In = []secrets.Location{secrets.InURL}
+	e := newEnv(t, loopback, []inject.Binding{b})
+	resp, _, err := e.do("GET", "https://example.com:"+e.port+"/v1/"+otherPH+"/x", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	found := false
+	for _, ev := range e.events {
+		if strings.Contains(fmt.Sprintf("%+v", ev), otherV) {
+			t.Fatalf("event holds the real secret: %+v", ev)
+		}
+		if ev.Kind == KindInject && strings.Contains(ev.Path, otherPH) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected an inject event with the placeholder path")
+	}
+}

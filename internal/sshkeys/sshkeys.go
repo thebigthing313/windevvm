@@ -165,3 +165,16 @@ func Run(c *ssh.Client, cmd string) (string, error) {
 	out, err := s.CombinedOutput(cmd)
 	return string(out), err
 }
+
+// RunInput executes a command with stdin as its standard input and returns
+// its combined output.
+func RunInput(c *ssh.Client, cmd, stdin string) (string, error) {
+	s, err := c.NewSession()
+	if err != nil {
+		return "", err
+	}
+	defer s.Close()
+	s.Stdin = strings.NewReader(stdin)
+	out, err := s.CombinedOutput(cmd)
+	return string(out), err
+}

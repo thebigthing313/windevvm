@@ -24,3 +24,9 @@ func SecretsDir() string { return filepath.Join(DataDir(), "secrets") }
 
 // CADir holds the local certificate authority.
 func CADir() string { return filepath.Join(DataDir(), "ca") }
+
+// PolicyPath is the global network policy file.
+func PolicyPath() string { return filepath.Join(DataDir(), "policy") }
+
+// DaemonDir holds the daemon's state, lock and logs.
+func DaemonDir() string { return filepath.Join(DataDir(), "daemon") }

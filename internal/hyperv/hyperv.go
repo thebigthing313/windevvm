@@ -226,3 +226,29 @@ func (c *Client) ResizeVHD(ctx context.Context, path string, size int64) error {
 func (c *Client) OptimizeVHD(ctx context.Context, path string) error {
 	return c.R.Run(ctx, `Optimize-VHD -Path $a.Path -Mode Full`, map[string]string{"Path": path}, nil)
 }
+
+// SetIPGuard locks a VM's network adapter to one IPv4 address: the VM can
+// send only from that address, and can't act as a DHCP server or router or
+// change its MAC. Calling it again replaces the previous rules.
+func (c *Client) SetIPGuard(ctx context.Context, name, ip string) error {
+	return c.R.Run(ctx, `
+$vm = Get-VM -Name $a.Name
+$nic = Get-VMNetworkAdapter -VM $vm
+$nic | Set-VMNetworkAdapter -MacAddressSpoofing Off -DhcpGuard On -RouterGuard On
+Get-VMNetworkAdapterAcl -VMNetworkAdapter $nic | Remove-VMNetworkAdapterAcl
+Add-VMNetworkAdapterAcl -VMNetworkAdapter $nic -Direction Outbound -Action Allow -LocalIPAddress ($a.IP + '/32')
+Add-VMNetworkAdapterAcl -VMNetworkAdapter $nic -Direction Outbound -Action Deny -LocalIPAddress '0.0.0.0/0'
+Add-VMNetworkAdapterAcl -VMNetworkAdapter $nic -Direction Outbound -Action Deny -LocalIPAddress '::/0'
+`, map[string]string{"Name": name, "IP": ip}, nil)
+}
+
+// IPGuard returns the outbound ACLs on a VM's adapter as "Action LocalIP"
+// strings, for windevvm doctor.
+func (c *Client) IPGuard(ctx context.Context, name string) ([]string, error) {
+	var out []string
+	err := c.R.Run(ctx, `
+$r = @(Get-VMNetworkAdapterAcl -VMName $a.Name | Where-Object { $_.Direction -eq 'Outbound' } | ForEach-Object { "$($_.Action) $($_.LocalAddress)" })
+ConvertTo-Json -InputObject $r -Compress
+`, map[string]string{"Name": name}, &out)
+	return out, err
+}

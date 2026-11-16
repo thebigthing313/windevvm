@@ -38,6 +38,13 @@ type Record struct {
 	Base        string    `json:"base"`
 	Created     time.Time `json:"created"`
 	Provisioned bool      `json:"provisioned"`
+	// Tier overrides the project file's network tier (windevvm network TIER).
+	Tier string `json:"tier,omitempty"`
+	// Secrets are enabled with windevvm secret use, on top of .windevvm.toml.
+	Secrets []string `json:"secrets,omitempty"`
+	// Placeholders maps each secret in use to this VM's placeholder for it.
+	// They aren't secret; the real values stay in the secret store.
+	Placeholders map[string]string `json:"placeholders,omitempty"`
 }
 
 // NameFor derives a stable VM name from a project path: wdvm-<folder>-<hash>.
@@ -83,6 +90,9 @@ type Store struct {
 
 // Dir is a VM's directory.
 func (s *Store) Dir(name string) string { return filepath.Join(s.Root, name) }
+
+// PolicyPath is a VM's own network policy file.
+func (s *Store) PolicyPath(name string) string { return filepath.Join(s.Dir(name), "policy") }
 
 func (s *Store) recordPath(name string) string { return filepath.Join(s.Dir(name), "vm.json") }
 
