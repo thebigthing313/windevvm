@@ -1,12 +1,14 @@
 package vm
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -111,22 +113,100 @@ func (m *Manager) installTools(c *ssh.Client, rec *Record) error {
 	}
 	script.WriteString("mise install --yes\n")
 	// Login shell, so the proxy settings from /etc/environment apply.
-	if err := sshkeys.Stream(c, "bash -l -s", strings.NewReader(script.String()), &prefixWriter{w: m.Out, prefix: "  "}); err != nil {
+	out := &miseWriter{w: m.Out, prefix: "  "}
+	err := sshkeys.Stream(c, "bash -l -s", strings.NewReader(script.String()), out)
+	out.Flush()
+	if err != nil {
 		m.say("Warning: installing toolchains failed (%v). Fix the cause (often a host missing from the allowlist: windevvm network log --blocked), then run mise install inside the VM.", err)
 	}
 	return nil
 }
 
-// prefixWriter indents streamed output.
-type prefixWriter struct {
+// miseWriter indents mise's streamed output and drops its progress noise.
+// Without a terminal, mise reprints its progress bar and every tool's status
+// line every few seconds; this keeps the first line of each step per tool
+// and the result lines.
+type miseWriter struct {
+	mu     sync.Mutex // ssh copies stdout and stderr in separate goroutines
 	w      io.Writer
 	prefix string
+	buf    []byte
+	last   map[string]string // tool -> last status shown
 }
 
-func (p prefixWriter) Write(b []byte) (int, error) {
-	s := strings.ReplaceAll(string(b), "\n", "\n"+p.prefix)
-	if _, err := io.WriteString(p.w, s); err != nil {
-		return 0, err
+func (m *miseWriter) Write(b []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.buf = append(m.buf, b...)
+	for {
+		i := bytes.IndexByte(m.buf, '\n')
+		if i < 0 {
+			break
+		}
+		line := strings.TrimRight(string(m.buf[:i]), "\r")
+		m.buf = m.buf[i+1:]
+		// A carriage return redraws the line; keep what a terminal would show.
+		if j := strings.LastIndexByte(line, '\r'); j >= 0 {
+			line = line[j+1:]
+		}
+		if !m.keep(line) {
+			continue
+		}
+		if _, err := io.WriteString(m.w, m.prefix+line+"\n"); err != nil {
+			return 0, err
+		}
+	}
+	// Bound the partial line: drop redrawn parts (a trailing \r may be half
+	// of \r\n, so it stays), and pass on a very long line as it is.
+	if j := bytes.LastIndexByte(m.buf, '\r'); j >= 0 && j < len(m.buf)-1 {
+		m.buf = append([]byte(nil), m.buf[j+1:]...)
+	}
+	if len(m.buf) > 4096 {
+		if _, err := io.WriteString(m.w, m.prefix+string(m.buf)+"\n"); err != nil {
+			return 0, err
+		}
+		m.buf = nil
 	}
 	return len(b), nil
+}
+
+// Flush writes a final line that had no newline.
+func (m *miseWriter) Flush() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.buf) > 0 {
+		io.WriteString(m.w, m.prefix+string(m.buf)+"\n")
+		m.buf = nil
+	}
+}
+
+func (m *miseWriter) keep(line string) bool {
+	if strings.ContainsAny(line, "█░") { // the overall progress bar
+		return strings.Contains(line, "installed")
+	}
+	// Status lines: "  node@22.1.0  downloading  3.0s  44.3/44.3 MB · 40 MB/s".
+	if strings.HasPrefix(line, "  ") {
+		f := splitWide(strings.TrimSpace(line))
+		if len(f) >= 2 && strings.Contains(f[0], "@") {
+			if m.last == nil {
+				m.last = map[string]string{}
+			}
+			if m.last[f[0]] == f[1] {
+				return false
+			}
+			m.last[f[0]] = f[1]
+		}
+	}
+	return true
+}
+
+// splitWide splits s at runs of two or more spaces.
+func splitWide(s string) []string {
+	var out []string
+	for _, f := range strings.Split(s, "  ") {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
 }

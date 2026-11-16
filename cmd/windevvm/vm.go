@@ -234,34 +234,61 @@ func cmdShell(args []string) error {
 	return sshInto(m, rec, rest)
 }
 
+const imageUsage = `usage:
+  windevvm image build        build a new base image and make it current
+  windevvm image ls           base images, and the VMs on each
+  windevvm image prune [-y]   delete base images no VM uses, build leftovers and the download cache`
+
 func cmdImage(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: windevvm image build|ls")
+		return errors.New(imageUsage)
 	}
-	cfg, err := config.LoadGlobal()
+	m, err := newManager()
 	if err != nil {
 		return err
 	}
+	cfg := m.Cfg
 	switch args[0] {
 	case "build":
 		ctx, cancel := signalContext()
 		defer cancel()
-		b := &image.Builder{Cfg: cfg, HV: &hyperv.Client{}, Out: os.Stdout}
+		b := &image.Builder{Cfg: cfg, HV: m.HV, Out: os.Stdout}
 		base, err := b.Build(ctx)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Base image ready: %s\nNew VMs will use it; existing VMs keep the image they were created from.\n", base.Path)
+		fmt.Printf("Base image ready: %s\nNew VMs will use it.\n", base.Path)
+		recs, err := m.Store.All()
+		if err != nil {
+			// The image is built and current; only the advice below is lost.
+			fmt.Printf("(Couldn't read the VM records to say which VMs stay on older images: %v)\n", err)
+		}
+		var older []string
+		for _, r := range recs {
+			if image.PathKey(r.Base) != image.PathKey(base.Path) {
+				older = append(older, r.Name)
+			}
+		}
+		if len(older) > 0 {
+			fmt.Printf("\n%d VM(s) keep the image they were created from: %s\n", len(older), strings.Join(older, ", "))
+			fmt.Println("To move one onto the new image, recreate it. That discards everything inside the VM, so first")
+			fmt.Println("bring its work out (windevvm pull, for clone mode), then: windevvm rm, windevvm up.")
+		}
+		fmt.Println("Once no VM uses an old image, windevvm image prune deletes it.")
 		return nil
 	case "ls":
 		files, err := image.List(cfg)
 		if err != nil {
 			return err
 		}
-		cur, _ := image.Current(cfg)
+		cur, _ := image.CurrentPath(cfg)
+		users, err := imageUsers(m)
+		if err != nil {
+			return err
+		}
 		for _, f := range files {
 			mark := " "
-			if f == cur.Path {
+			if image.PathKey(f) == image.PathKey(cur) {
 				mark = "*"
 			}
 			info, _ := os.Stat(f)
@@ -269,14 +296,103 @@ func cmdImage(args []string) error {
 			if info != nil {
 				size = config.Size(info.Size()).String()
 			}
-			fmt.Printf("%s %s  %s\n", mark, f, size)
+			line := fmt.Sprintf("%s %s  %s", mark, f, size)
+			if vms := users[image.PathKey(f)]; len(vms) > 0 {
+				line += "  used by " + strings.Join(vms, ", ")
+			}
+			fmt.Println(line)
 		}
 		if len(files) == 0 {
 			fmt.Println("No base images yet. Build one with: windevvm image build")
+		} else {
+			fmt.Println("* = current: new VMs use it")
 		}
 		return nil
+	case "prune":
+		fs := flag.NewFlagSet("image prune", flag.ContinueOnError)
+		yes := fs.Bool("y", false, "don't ask for confirmation")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		return imagePrune(m, *yes)
 	}
-	return fmt.Errorf("unknown image command %q", args[0])
+	return fmt.Errorf("unknown image command %q\n%s", args[0], imageUsage)
+}
+
+// imageUsers maps each disk (by image.PathKey) to the VMs that depend on it,
+// from the VM records and from Hyper-V itself, so a VM whose record is gone,
+// or a build VM left registered, still counts.
+func imageUsers(m *vm.Manager) (map[string][]string, error) {
+	users := map[string][]string{}
+	add := func(base, name string) {
+		k := image.PathKey(base)
+		for _, n := range users[k] {
+			if n == name {
+				return
+			}
+		}
+		users[k] = append(users[k], name)
+	}
+	recs, err := m.Store.All()
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range recs {
+		if r.Base != "" {
+			add(r.Base, r.Name)
+		}
+	}
+	ctx, cancel := signalContext()
+	defer cancel()
+	disks, err := m.HV.VMDisks(ctx, "wdvm-")
+	if err != nil {
+		return nil, fmt.Errorf("ask Hyper-V which disks VMs use: %w", err)
+	}
+	for name, ds := range disks {
+		for _, d := range ds {
+			add(d, name)
+		}
+	}
+	return users, nil
+}
+
+func imagePrune(m *vm.Manager, yes bool) error {
+	cur, err := image.CurrentPath(m.Cfg)
+	if err != nil && !errors.Is(err, image.ErrNoImage) {
+		return err
+	}
+	users, err := imageUsers(m)
+	if err != nil {
+		return err
+	}
+	plan, err := image.PlanPrune(image.Dir(m.Cfg), cur, users, time.Now())
+	if err != nil {
+		return err
+	}
+	for _, k := range plan.Keep {
+		fmt.Printf("keep    %s  (%s)\n", k.Path, k.Why)
+	}
+	if len(plan.Delete) == 0 {
+		fmt.Println("Nothing to delete.")
+		return nil
+	}
+	for _, it := range plan.Delete {
+		fmt.Printf("delete  %s  %s  (%s)\n", it.Path, config.Size(it.Size), it.What)
+	}
+	fmt.Printf("This frees %s.\n", config.Size(plan.Bytes()))
+	if !yes {
+		fmt.Print("Delete these? [y/N] ")
+		var reply string
+		fmt.Scanln(&reply)
+		if !strings.HasPrefix(strings.ToLower(reply), "y") {
+			return errors.New("cancelled")
+		}
+	}
+	if err := image.Prune(plan); err != nil {
+		return err
+	}
+	fmt.Println("Done.")
+	return nil
 }
 
 func firstArg(args []string) string {

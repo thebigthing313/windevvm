@@ -24,7 +24,8 @@ const networkUsage = `usage:
   windevvm network allow RULE... [--global]
   windevvm network deny RULE... [--global]
   windevvm network rm RULE... [--global]
-  windevvm network log [-n N] [-f] [--all]
+  windevvm network log [-n N] [-f] [--all] [--blocked]
+  windevvm network presets               list the presets and their hosts
 Add --vm NAME to pick a VM other than this project's.
 Rules: example.com, *.example.com, host:port, 10.0.0.0/8:5432, @preset (` + "%s" + `), !rule denies.`
 
@@ -53,6 +54,9 @@ func cmdNetwork(args []string) error {
 	usage := fmt.Sprintf(networkUsage, strings.Join(egress.PresetNames(), ", "))
 	if len(args) > 0 && args[0] == "log" {
 		return networkLog(args[1:])
+	}
+	if len(args) > 0 && args[0] == "presets" {
+		return networkPresets()
 	}
 	args, vmName, global, err := networkFlags(args)
 	if err != nil {
@@ -320,3 +324,27 @@ func networkLog(args []string) error {
 }
 
 type eventT = proxy.Event
+
+// networkPresets lists the presets, marking the ones the global policy uses.
+func networkPresets() error {
+	global := map[string]string{}
+	if b, err := os.ReadFile(paths.PolicyPath()); err == nil {
+		for _, line := range egress.ParseLines(string(b)) {
+			l := strings.ToLower(line)
+			if name, ok := strings.CutPrefix(l, "@"); ok {
+				global[name] = "allowed in the global policy"
+			} else if name, ok := strings.CutPrefix(l, "!@"); ok {
+				global[name] = "denied in the global policy"
+			}
+		}
+	}
+	fmt.Println("Presets: write @name in a rule, e.g. windevvm network allow @ruby (add --global for every VM).")
+	for _, name := range egress.PresetNames() {
+		fmt.Printf("\n@%-7s %s", name, egress.PresetNotes[name])
+		if g := global[name]; g != "" {
+			fmt.Printf("  [%s]", g)
+		}
+		fmt.Printf("\n         %s\n", strings.Join(egress.Presets[name], " "))
+	}
+	return nil
+}

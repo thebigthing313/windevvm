@@ -50,6 +50,26 @@ var Presets = map[string][]string{
 	},
 	"go":     {"proxy.golang.org", "sum.golang.org", "storage.googleapis.com"},
 	"crates": {"crates.io", "index.crates.io", "static.crates.io"},
+	"ruby":   {"rubygems.org", "*.rubygems.org", "cache.ruby-lang.org"},
+	"maven":  {"repo.maven.apache.org", "repo1.maven.org"},
+	"gradle": {"services.gradle.org", "downloads.gradle.org", "plugins.gradle.org", "plugins-artifacts.gradle.org"},
+	"docker": {"docker.io", "registry-1.docker.io", "auth.docker.io", "index.docker.io", "production.cloudflare.docker.com"},
+}
+
+// PresetNotes say what each preset is for, for windevvm network presets.
+var PresetNotes = map[string]string{
+	"apt":    "Ubuntu packages (apt install)",
+	"npm":    "npm and Yarn registries",
+	"pypi":   "Python packages (pip, uv, poetry)",
+	"github": "GitHub: git over HTTPS, the API, release downloads, raw files, ghcr.io",
+	"mise":   "mise and the node, go and rust builds it installs (python also needs @github)",
+	"vscode": "VS Code Remote-SSH server and the extension marketplaces",
+	"go":     "Go module proxy and checksum database",
+	"crates": "Rust crates (cargo)",
+	"ruby":   "RubyGems (gem, bundler) and Ruby source downloads",
+	"maven":  "Maven Central",
+	"gradle": "Gradle distributions and plugin portal (most builds also need @maven)",
+	"docker": "Docker Hub image pulls",
 }
 
 // AgentHosts are the coding agents' API and sign-in hosts. They are allowed
@@ -66,7 +86,7 @@ const DefaultGlobalPolicy = `# windevvm global network policy: applies to every 
 # @preset, and !rule to deny (denies always win). Edit freely, or use
 # windevvm network allow|deny|rm --global.
 #
-# Presets: apt, npm, pypi, github, mise, go, crates, vscode.
+# Presets: windevvm network presets lists them and their hosts.
 @apt
 @npm
 @pypi

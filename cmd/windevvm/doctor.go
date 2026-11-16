@@ -71,6 +71,11 @@ fi
 
 code=$(curl -s -o /dev/null -w '%{http_connect}' --max-time 10 -x "$P" https://169.254.169.254/)
 if [ "$code" = 403 ]; then r PASS blocked "a disallowed destination gets 403 from the proxy"; else r FAIL blocked "CONNECT 169.254.169.254:443 got '$code', want 403"; fi
+if windevvm-why 50 2>/dev/null | grep -qF 169.254.169.254; then
+  r PASS why "windevvm-why lists that blocked request"
+else
+  r FAIL why "windevvm-why doesn't list the blocked request to 169.254.169.254"
+fi
 
 code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -x "$P" https://api.anthropic.com/)
 case "$code" in

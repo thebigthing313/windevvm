@@ -22,7 +22,8 @@ Usage:
 
   windevvm setup           one-time host setup (asks for administrator rights)
   windevvm image build     build the base image (Ubuntu + toolchains + coding agents)
-  windevvm image ls
+  windevvm image ls        base images, and the VMs on each
+  windevvm image prune [-y] delete unused base images, build leftovers and the download cache
 
   windevvm secret set NAME [--preset P | --hosts h1,h2] [--in header,url,body] [--from-env VAR]
   windevvm secret ls
@@ -33,6 +34,7 @@ Usage:
   windevvm network none|allowlist|internet|reset
   windevvm network allow|deny|rm RULE... [--global]
   windevvm network log [-n N] [-f] [--all] [--blocked]
+  windevvm network presets list the rule presets (@npm, @github, ...) and their hosts
   windevvm doctor          check this VM's network lockdown from the inside
   windevvm daemon [status|stop|restart]   the background proxy (starts automatically)
 

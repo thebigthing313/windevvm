@@ -38,17 +38,34 @@ func Dir(cfg config.Global) string { return filepath.Join(cfg.Storage(), "images
 
 func currentPath(cfg config.Global) string { return filepath.Join(Dir(cfg), "current.json") }
 
-// Current returns the base image new VMs are created from.
-func Current(cfg config.Global) (Base, error) {
+// ErrNoImage means no base image has been built yet.
+var ErrNoImage = errors.New("no base image yet; build one with: windevvm image build")
+
+// readCurrent reads current.json, whether or not the image still exists.
+func readCurrent(cfg config.Global) (Base, error) {
 	var b Base
 	data, err := os.ReadFile(currentPath(cfg))
 	if errors.Is(err, fs.ErrNotExist) {
-		return b, errors.New("no base image yet; build one with: windevvm image build")
+		return b, ErrNoImage
 	}
 	if err != nil {
 		return b, err
 	}
-	if err := json.Unmarshal(data, &b); err != nil {
+	err = json.Unmarshal(data, &b)
+	return b, err
+}
+
+// CurrentPath returns the path of the current base image as recorded,
+// whether or not the file still exists.
+func CurrentPath(cfg config.Global) (string, error) {
+	b, err := readCurrent(cfg)
+	return b.Path, err
+}
+
+// Current returns the base image new VMs are created from.
+func Current(cfg config.Global) (Base, error) {
+	b, err := readCurrent(cfg)
+	if err != nil {
 		return b, err
 	}
 	if _, err := os.Stat(b.Path); err != nil {

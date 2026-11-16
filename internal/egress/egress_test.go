@@ -23,6 +23,9 @@ func TestPresetsParse(t *testing.T) {
 		if _, err := ExpandRule("@" + name); err != nil {
 			t.Errorf("@%s: %v", name, err)
 		}
+		if PresetNotes[name] == "" {
+			t.Errorf("@%s has no note", name)
+		}
 	}
 	if _, err := ExpandRule("@nope"); err == nil {
 		t.Fatal("unknown preset accepted")
@@ -158,6 +161,8 @@ func TestGuestScript(t *testing.T) {
 		`[credential "https://github.com"]`,
 		"password=" + ph,
 		testCert + "WDVM_EOF",
+		`"http://10.77.0.1:18010/why?n=$n"`,
+		"chmod 0755 /usr/local/bin/windevvm-why",
 		GuestDone,
 	} {
 		if !strings.Contains(s, want) {

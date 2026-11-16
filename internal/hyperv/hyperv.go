@@ -318,3 +318,36 @@ ConvertTo-Json -InputObject $r -Compress -Depth 3
 	}
 	return out, err
 }
+
+// VMDisks returns, for each VM whose name starts with prefix, every disk it
+// depends on: its attached disks and their whole differencing chains. Image
+// prune uses it so a base image some VM needs is never deleted, even when
+// windevvm has no record of that VM, and even when a build VM has the image
+// attached directly. A disk that can't be read is an error, not "no parent".
+func (c *Client) VMDisks(ctx context.Context, prefix string) (map[string][]string, error) {
+	var rows []struct{ VM, Disk string }
+	err := c.R.Run(ctx, `
+$ErrorActionPreference = 'Stop'
+$r = @(Get-VM | Where-Object { $_.Name.StartsWith($a.Prefix) } | ForEach-Object {
+  $n = $_.Name
+  Get-VMHardDiskDrive -VM $_ | Where-Object { $_.Path } | ForEach-Object {
+    $p = $_.Path
+    $seen = 0
+    while ($p -and $seen -lt 16) {
+      [pscustomobject]@{ VM = $n; Disk = $p }
+      $p = (Get-VHD -Path $p).ParentPath
+      $seen++
+    }
+  }
+})
+ConvertTo-Json -InputObject $r -Compress
+`, map[string]string{"Prefix": prefix}, &rows)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]string{}
+	for _, r := range rows {
+		out[r.VM] = append(out[r.VM], r.Disk)
+	}
+	return out, nil
+}

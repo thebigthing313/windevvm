@@ -47,6 +47,9 @@ func TestListVMs(t *testing.T) {
 	if _, err := c.ListVMs(ctx, "wdvm-"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := c.VMDisks(ctx, "wdvm-"); err != nil {
+		t.Fatal(err)
+	}
 	ok, err := c.SwitchExists(ctx, DefaultSwitch)
 	if err != nil || !ok {
 		t.Fatalf("SwitchExists(Default Switch) = %v, %v", ok, err)

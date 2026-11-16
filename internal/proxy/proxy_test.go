@@ -40,6 +40,7 @@ type env struct {
 	plain    *httptest.Server
 	proxy    *Server
 	client   *http.Client
+	proxyURL string
 
 	mu     sync.Mutex
 	last   *seen
@@ -108,6 +109,7 @@ func newEnv(t *testing.T, rules string, bindings []inject.Binding) *env {
 	ps := httptest.NewServer(e.proxy)
 	t.Cleanup(ps.Close)
 	proxyURL, _ := url.Parse(ps.URL)
+	e.proxyURL = ps.URL
 
 	// The VM trusts the windevvm CA, plus (for the tunnel test) the upstream's
 	// own certificate.

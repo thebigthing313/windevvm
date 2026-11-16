@@ -76,6 +76,8 @@ type Server struct {
 	vm        atomic.Pointer[VM]
 	once      sync.Once
 	transport *http.Transport
+	// blocks are recent blocks, for the why page.
+	blocks blockRing
 }
 
 // New returns a proxy for vm.
@@ -96,13 +98,17 @@ func (s *Server) SetVM(vm *VM) {
 // Config returns the current configuration.
 func (s *Server) Config() *VM { return s.vm.Load() }
 
+// emit reports a decision about a request from the VM. Blocks are also kept
+// for the why page.
 func (s *Server) emit(vm *VM, e Event) {
-	if s.OnEvent == nil {
-		return
-	}
 	e.Time = time.Now()
 	e.VM = vm.Name
-	s.OnEvent(e)
+	if e.Kind == KindBlock || e.Kind == KindExfil {
+		s.blocks.add(e)
+	}
+	if s.OnEvent != nil {
+		s.OnEvent(e)
+	}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -112,11 +118,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !sourceOK(vm, r.RemoteAddr) {
-		s.emit(vm, Event{Kind: KindBlock, Method: r.Method, Host: r.Host, Reason: "request from unexpected address " + r.RemoteAddr})
+		// Not the VM's own request, so it stays out of the VM's why page.
+		if s.OnEvent != nil {
+			s.OnEvent(Event{Time: time.Now(), VM: vm.Name, Kind: KindBlock, Method: r.Method, Host: r.Host, Reason: "request from unexpected address " + r.RemoteAddr})
+		}
 		http.Error(w, "windevvm: request from an unexpected address", http.StatusForbidden)
 		return
 	}
 	switch {
+	case isWhy(r):
+		s.serveWhy(w, r, vm)
 	case r.Method == http.MethodConnect:
 		s.handleConnect(w, r, vm)
 	case r.URL.IsAbs():
@@ -160,6 +171,7 @@ func writeBlock(w http.ResponseWriter, reason, suggest string) {
 	if suggest != "" {
 		fmt.Fprintf(w, "To allow it, run on the host: windevvm network allow %s\n", suggest)
 	}
+	fmt.Fprintf(w, "In a windevvm VM, windevvm-why lists recent blocks.\n")
 }
 
 func (s *Server) block(w http.ResponseWriter, vm *VM, method, host string, port int, d policy.Decision) {
