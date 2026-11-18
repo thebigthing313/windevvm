@@ -37,6 +37,19 @@ func (d *Dir) KnownHostsPath() string { return filepath.Join(d.Path, "known_host
 // ConfigPath is the generated ssh config, usable with ssh -F or Include.
 func (d *Dir) ConfigPath() string { return filepath.Join(d.Path, "config") }
 
+// ConfigRef writes path p for an ssh config. A path under the user's home
+// becomes ~/..., which every ssh on Windows reads the same way. Git for
+// Windows' ssh (which VS Code may pick) treats C:/... in an Include as
+// relative to ~/.ssh, so it would silently skip the file.
+func ConfigRef(p string) string {
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, err := filepath.Rel(home, p); err == nil && rel != "." && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel) {
+			return "~/" + filepath.ToSlash(rel)
+		}
+	}
+	return filepath.ToSlash(p)
+}
+
 // KeyPath returns the client private key path, creating the key on first use.
 func (d *Dir) KeyPath() (string, error) {
 	if _, err := d.ensureKey(); err != nil {
@@ -125,9 +138,9 @@ func (d *Dir) Sync(hosts []Host) error {
 		fmt.Fprintf(&cfg, "\nHost %s\n", h.Alias)
 		fmt.Fprintf(&cfg, "  HostName %s\n", h.IP)
 		fmt.Fprintf(&cfg, "  User %s\n", User)
-		fmt.Fprintf(&cfg, "  IdentityFile \"%s\"\n", filepath.ToSlash(key))
+		fmt.Fprintf(&cfg, "  IdentityFile \"%s\"\n", ConfigRef(key))
 		fmt.Fprintf(&cfg, "  IdentitiesOnly yes\n")
-		fmt.Fprintf(&cfg, "  UserKnownHostsFile \"%s\"\n", filepath.ToSlash(d.KnownHostsPath()))
+		fmt.Fprintf(&cfg, "  UserKnownHostsFile \"%s\"\n", ConfigRef(d.KnownHostsPath()))
 		fmt.Fprintf(&cfg, "  HostKeyAlias %s\n", h.Alias)
 		fmt.Fprintf(&cfg, "  StrictHostKeyChecking yes\n")
 		fmt.Fprintf(&cfg, "  LogLevel ERROR\n")

@@ -286,12 +286,23 @@ func ensureSSHInclude(generated string, yes bool) error {
 		return err
 	}
 	path := filepath.Join(home, ".ssh", "config")
-	line := `Include "` + filepath.ToSlash(generated) + `"`
+	line := `Include "` + sshkeys.ConfigRef(generated) + `"`
 	b, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if strings.Contains(strings.ToLower(string(b)), strings.ToLower(filepath.ToSlash(generated))) {
+	if strings.Contains(strings.ToLower(string(b)), strings.ToLower(line)) {
+		return nil
+	}
+	// Older versions wrote the absolute path, which Git for Windows' ssh
+	// ignores. Swap it in place; it was already agreed to.
+	old := `Include "` + filepath.ToSlash(generated) + `"`
+	if i := strings.Index(strings.ToLower(string(b)), strings.ToLower(old)); i >= 0 {
+		text := string(b[:i]) + line + string(b[i+len(old):])
+		if err := writeFile(path, text); err != nil {
+			return err
+		}
+		fmt.Printf("Updated the Include in %s.\n", path)
 		return nil
 	}
 	if !yes {

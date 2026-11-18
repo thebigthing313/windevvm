@@ -2,6 +2,7 @@ package sshkeys
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -71,4 +72,17 @@ func ReadAuthorizedKeyFile(path string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+func TestConfigRef(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+	if got := ConfigRef(filepath.Join(home, "AppData", "x", "config")); got != "~/AppData/x/config" {
+		t.Errorf("under home: %q", got)
+	}
+	other := filepath.Join(filepath.Dir(home), "elsewhere", "config")
+	if got := ConfigRef(other); got != filepath.ToSlash(other) {
+		t.Errorf("outside home: %q", got)
+	}
 }

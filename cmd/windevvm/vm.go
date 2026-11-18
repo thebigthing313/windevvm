@@ -113,8 +113,11 @@ func sshInto(m *vm.Manager, rec *vm.Record, command []string) error {
 	args = append(args, rec.Name, remote)
 	cmd := exec.Command(exe, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	// Ctrl-C belongs to the remote shell, not to us.
-	signal.Ignore(os.Interrupt)
+	// Ctrl-C belongs to the remote shell, not to us. It must be caught, not
+	// ignored: on Windows an ignored Ctrl-C falls through to the default
+	// handler, which kills this process and leaves ssh.exe fighting
+	// PowerShell for the console.
+	signal.Notify(make(chan os.Signal, 1), os.Interrupt)
 	err = cmd.Run()
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
